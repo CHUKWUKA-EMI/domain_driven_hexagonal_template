@@ -21,15 +21,15 @@ const (
 
 type Middleware struct {
 	appConfig *config.AppConfig
-	handler   http.Handler
+	handlers  []func(http.Handler) http.Handler
 }
 
-func New(appConfig *config.AppConfig, handler http.Handler) *Middleware {
-	return &Middleware{appConfig: appConfig, handler: handler}
+func New(appConfig *config.AppConfig) *Middleware {
+	return &Middleware{appConfig: appConfig}
 }
 
-func (m *Middleware) LogIP() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (m *Middleware) LogIP(next http.Handler) http.Handler {
+	fn := func(w http.ResponseWriter, r *http.Request) {
 		clientIP := r.Header.Get("X-Forwarded-For")
 		if clientIP == "" {
 			clientIP = r.Header.Get("X-Real-IP")
@@ -39,77 +39,26 @@ func (m *Middleware) LogIP() http.Handler {
 		}
 		fmt.Println("Client IP: ", clientIP)
 
-		m.handler.ServeHTTP(w, r)
-	})
-}
-
-func ApplyMiddlewares(appConfig *config.AppConfig, h http.Handler) http.Handler {
-	return ChainMiddleware(
-		SetCors(appConfig),
-		Authenticate(appConfig),
-	)(h)
-}
-
-func ChainMiddleware(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
-	return func(h http.Handler) http.Handler {
-		for i := len(middlewares) - 1; i >= 0; i-- {
-			h = middlewares[i](h)
-		}
-		return h
+		next.ServeHTTP(w, r)
 	}
+	return http.HandlerFunc(fn)
+}
+
+func (m *Middleware) Apply(h http.Handler) http.Handler {
+	for i := len(m.handlers) - 1; i >= 0; i-- {
+		h = m.handlers[i](h)
+	}
+	return h
+}
+
+func (m *Middleware) Use(middlewares ...func(http.Handler) http.Handler) {
+	m.handlers = append(m.handlers, middlewares...)
 }
 
 // Authenticate is a middleware for authenticating requests
-func Authenticate(appConfig *config.AppConfig) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api" {
-				next.ServeHTTP(w, r)
-				return
-			}
-			authHeader := r.Header.Get("authorization")
-
-			if authHeader == "" {
-				handler.HandleResponse(w, http.StatusUnauthorized, map[string]string{"error": "Missing or Invalid Authorization Header"})
-				return
-			}
-
-			authPayload := strings.Split(authHeader, " ")
-			if len(authPayload) != 2 {
-				handler.HandleResponse(w, http.StatusUnauthorized, map[string]string{"error": "Invalid authentication scheme"})
-				return
-			}
-
-			authToken := authPayload[1]
-
-			uid := r.Header.Get("UID")
-			if uid == "" {
-				handler.HandleResponse(w, http.StatusUnauthorized, map[string]string{"error": "Missing UID request header. Please include it."})
-				return
-			}
-
-			uid, err := appConfig.Auth.VerifyAuthToken(authToken, uid)
-
-			if err != nil {
-				handler.HandleResponse(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-				return
-			}
-			user, err := appConfig.Auth.GetPrincipal(uid)
-			if err != nil {
-				handler.HandleResponse(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-				return
-			}
-
-			ctx := context.WithValue(r.Context(), UserContextKey, user)
-			req := r.WithContext(ctx)
-			next.ServeHTTP(w, req)
-		})
-	}
-}
-
-func (m *Middleware) Authenticate2(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api" {
+func (m *Middleware) Authenticate(next http.Handler) http.Handler {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -149,11 +98,12 @@ func (m *Middleware) Authenticate2(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
 		req := r.WithContext(ctx)
 		next.ServeHTTP(w, req)
-	})
+	}
+	return http.HandlerFunc(fn)
 }
 
 // HasRoles is a middleware for checking if a user has the required roles
-func HasRoles(roles []string, appConfig *config.AppConfig) func(http.Handler) http.Handler {
+func (m *Middleware) HasRoles(roles []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			currentUser := r.Context().Value(UserContextKey)
@@ -175,26 +125,26 @@ func HasRoles(roles []string, appConfig *config.AppConfig) func(http.Handler) ht
 	}
 }
 
-func SetCors(appConfig *config.AppConfig) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			allowedOrigins := appConfig.AllowedOrigins
-			origin := r.Header.Get("Origin")
+func (m *Middleware) SetCors(next http.Handler) http.Handler {
 
-			if slices.Contains(allowedOrigins, origin) {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			}
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		allowedOrigins := m.appConfig.AllowedOrigins
+		origin := r.Header.Get("Origin")
 
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if slices.Contains(allowedOrigins, origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
 
-			// Handle preflight request
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-			next.ServeHTTP(w, r)
-		})
+		// Handle preflight request
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	}
+	return http.HandlerFunc(fn)
 }

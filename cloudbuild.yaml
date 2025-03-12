@@ -20,12 +20,8 @@ steps:
         --image gcr.io/$PROJECT_ID/backend_api_template:$COMMIT_SHA
         --region us-central1
         --allow-unauthenticated
-        --set-env-vars "DB_URL=${_DB_URL},
-        AUTH_API_KEY=${_AUTH_API_KEY},
-        AUTH_EMAIL=${_AUTH_EMAIL},
-        AUTH_PASSWORD=${_AUTH_PASSWORD},
-        MESSAGING_API_BASE_URL=${_MESSAGING_API_BASE_URL},
-        ALLOWED_ORIGIN=${_ALLOWED_ORIGIN}"
+        --set-env-vars "SECRETS_API_BASE_URL=${_SECRETS_API_BASE_URL},
+        SECRETS_API_KEY=${_SECRETS_API_KEY}"
         '
       ]
 images:
